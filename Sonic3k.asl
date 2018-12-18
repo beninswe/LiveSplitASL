@@ -63,6 +63,9 @@ init
     vars.processingzone = false;
     vars.skipsAct1Split = false;
     vars.gameshortname = "";
+    vars.specialstagetimer = new Stopwatch();
+    vars.addspecialstagetime = false;
+    vars.specialstagetimeadded = false;
     if ( game.ProcessName == "retroarch" ) {
         if ( game.Is64Bit() ) {
             version = "64bit";
@@ -124,6 +127,17 @@ init
         new MemoryWatcher<byte>(  (IntPtr)memoryOffset + ( isBigEndian ? 0xFDEB : 0xFDEA ) ) { Name = "savefilezone" },
         new MemoryWatcher<ushort>((IntPtr)memoryOffset + ( isBigEndian ? 0xF648 : 0xF647 ) ) { Name = "waterlevel" },
         new MemoryWatcher<byte>(  (IntPtr)memoryOffset + ( isBigEndian ? 0xFE25 : 0xFE24 ) ) { Name = "centiseconds" },
+        new MemoryWatcher<byte>(  (IntPtr)memoryOffset + ( isBigEndian ? 0xFE48 : 0xFE49 ) ) { Name = "inspecialstage" },
+        /* $FFA6-$FFA9  Level number in Blue Sphere  */
+        /* $FFB0 	Number of chaos emeralds  */
+        /* $FFB1 	Number of super emeralds  */
+        /* $FFB2-$FFB8 	Array of finished special stages. Each byte represents one stage:
+
+            0 - special stage not completed
+            1 - chaos emerald collected
+            2 - super emerald present but grayed
+            3 - super emerald present and activated 
+        */
     };
     vars.isBigEndian = isBigEndian;
     string gamename = memory.ReadString(IntPtr.Add((IntPtr)memoryOffset, (int)0xFFFC ),4);
@@ -173,7 +187,7 @@ update
             vars.bonus = false;
             vars.savefile = vars.watchers["savefile"].Current;
             vars.skipsAct1Split = !settings["actsplit"];
-            
+            vars.specialstagetimer.Reset();
         }
     }
 
@@ -260,6 +274,12 @@ split
         };
     }
 
+
+    if ( vars.specialstagetimeadded ) {
+        vars.specialstagetimeadded = false;
+        return true;
+    }
+
     if ( vars.watchers["zone"].Old != vars.watchers["zone"].Current && settings["actsplit"] ) {
         vars.skipsAct1Split = ( 
             ( vars.watchers["zone"].Current == MARBLE_GARDEN && settings["act_mg1"] ) || 
@@ -276,8 +296,9 @@ split
         vars.watchers["act"].Current == vars.nextact && vars.watchers["act"].Old == vars.nextact 
     ) {
         vars.processingzone = true;
-        
-
+        if ( ( vars.watchers["zone"].Current == CARNIVAL_NIGHT || vars.watchers["zone"].Current == FLYING_BATTERY ) && vars.watchers["act"].Current == ACT_1 && vars.specialstagetimer.ElapsedMilliseconds > 0 ) {
+            vars.addspecialstagetime = true;
+        }
         switch ( (int)vars.watchers["act"].Current ) {
             // This is AFTER a level change.
             case ACT_1:
@@ -360,15 +381,27 @@ split
 
 isLoading
 {
-    if ( vars.bonus && old.timebonus == 0 ) {
+    if ( vars.bonus && ( 
+            ( vars.watchers["inspecialstage"].Old == 1 && vars.watchers["inspecialstage"].Current == 0 )
+            || ( vars.watchers["inspecialstage"].Current == 0 &&  old.timebonus == 0 )
+        )
+        ) {
         // If we had a bonus, and the previous frame's timebonus is now 0, reset it
+        vars.specialstagetimer.Stop();
+        vars.DebugOutput(String.Format("Time in Special Stage: {0}", vars.specialstagetimer.ElapsedMilliseconds));
         vars.bonus = false;
-    } else if ( !vars.bonus && vars.watchers["act"].Current <= 1 && current.timebonus < old.timebonus && current.scoretally > old.scoretally ) {
-        // if we haven't detected a bonus yet
-        // check that we are in an act (sanity check)
-        // then check to see if the current timebonus is less than the previous frame's one.
-        vars.DebugOutput(String.Format("Detected Bonus decrease: {0} from: {1}", current.timebonus, old.timebonus));
-        vars.bonus = true;
+    } else if ( !vars.bonus ) {
+        if ( vars.watchers["act"].Current <= 1 && current.timebonus < old.timebonus && current.scoretally > old.scoretally ) {
+            // if we haven't detected a bonus yet
+            // check that we are in an act (sanity check)
+            // then check to see if the current timebonus is less than the previous frame's one.
+            vars.DebugOutput(String.Format("Detected Bonus decrease: {0} from: {1}", current.timebonus, old.timebonus));
+            vars.bonus = true;
+        } else if ( vars.watchers["inspecialstage"].Old == 0 &&  ( vars.watchers["inspecialstage"].Current == 1 || vars.watchers["inspecialstage"].Current == 2 ) ) {
+            vars.DebugOutput(String.Format("Detected Entering Special Stage"));
+            vars.specialstagetimer.Start();
+            vars.bonus = true;
+        }
     }
     return vars.bonus;
 }
@@ -378,5 +411,12 @@ gameTime
 {
     /* Ready for supporting S1 and S2, 
     so for S3K we just return what the GameTime currently is */
-    return TimeSpan.FromMilliseconds(timer.CurrentTime.GameTime.Value.TotalMilliseconds);
+    double currentElapsedTime = timer.CurrentTime.GameTime.Value.TotalMilliseconds;
+    if ( vars.addspecialstagetime ) {
+        vars.addspecialstagetime = false;
+        currentElapsedTime += vars.specialstagetimer.ElapsedMilliseconds;
+        vars.specialstagetimer.Reset();
+        vars.specialstagetimeadded = true;
+    }
+    return TimeSpan.FromMilliseconds(currentElapsedTime);
 }
