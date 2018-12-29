@@ -130,9 +130,8 @@ update
 
 start
 {
-    
     if (
-        (  vars.watchers["ingame"].Current == 1 && vars.watchers["ingame"].Old == 0 && vars.watchers["level"].Current == 0 ) 
+        (  vars.watchers["ingame"].Current == 1 && vars.watchers["ingame"].Old == 0 && vars.watchers["level"].Current <= 1 ) 
     ) {
         return true;
     }
